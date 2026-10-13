@@ -105,14 +105,20 @@ def predict_proba(texts):
         ]
     """
 
+    if isinstance(texts, str):
+        texts = [texts]
+    else:
+        texts = list(texts)
+
+    texts = [str(text) for text in texts]
+
     inputs = tokenizer(
         texts,
-        return_tensors="pt",
-        truncation=True,
         padding=True,
-        max_length=256
+        truncation=True,
+        max_length=128,
+        return_tensors="pt",
     )
-
     with torch.no_grad():
 
         outputs = model(**inputs)

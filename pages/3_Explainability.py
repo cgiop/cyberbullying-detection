@@ -1,10 +1,12 @@
 import streamlit as st
 import pandas as pd
-
+import numpy as np
 from backend.predictor import predict_cyberbullying
 from backend.explainer import explain_text
-
-
+from backend.shap_explainer import (
+    explain_with_shap,
+    CLASS_NAMES,
+)
 st.set_page_config(
     page_title="Explainable AI",
     page_icon="🧠",
@@ -14,7 +16,7 @@ st.set_page_config(
 st.title("🧠 Explainable AI")
 st.write(
     "Understand why the mBERT model classified a comment as "
-    "Cyberbullying or Non-Cyberbullying using LIME."
+    "Cyberbullying or Non-Cyberbullying."
 )
 
 st.markdown("---")
@@ -29,7 +31,11 @@ mode = st.radio(
     ["Single Comment", "CSV File"],
     horizontal=True
 )
-
+explanation_method = st.radio(
+    "Choose explanation method:",
+    ["LIME", "SHAP"],
+    horizontal=True,
+)
 
 # ============================================================
 # SINGLE COMMENT
@@ -101,103 +107,113 @@ if mode == "Single Comment":
                 st.progress(cb)
                 st.caption(f"{cb * 100:.2f}%")
 
-            # ------------------------------------------------
-            # LIME
-            # ------------------------------------------------
 
             st.markdown("---")
-            st.markdown("### 🔬 LIME Explanation")
 
-            with st.spinner("Generating explanation..."):
+            if explanation_method == "LIME":
 
-                explanation = explain_text(text)
+                st.markdown("### 🔬 LIME Explanation")
 
-            predicted_class = (
-                1 if result["label"] == "Cyberbullying" else 0
-            )
+                with st.spinner("Generating LIME explanation..."):
+                    explanation = explain_text(text)
 
-            available_labels = explanation.available_labels()
+                available_labels = explanation.available_labels()
 
-            if available_labels:
-                explanation_list = explanation.as_list(label=available_labels[0])
+                if available_labels:
+                    explanation_list = explanation.as_list(
+                        label=available_labels[0]
+                    )
 
-                # Continue with your existing code for displaying
-                # supporting and opposing words
+                    positive_words = [
+                        (word, weight)
+                        for word, weight in explanation_list
+                        if weight > 0
+                    ]
+
+                    negative_words = [
+                        (word, weight)
+                        for word, weight in explanation_list
+                        if weight < 0
+                    ]
+
+                    col1, col2 = st.columns(2)
+
+                    with col1:
+                        st.subheader("🟢 Supporting Words")
+
+                        for word, weight in positive_words:
+                            st.write(f"**{word}** → +{weight:.4f}")
+                            st.progress(min(abs(weight), 1.0))
+
+                    with col2:
+                        st.subheader("🔵 Opposing Words")
+
+                        for word, weight in negative_words:
+                            st.write(f"**{word}** → {weight:.4f}")
+                            st.progress(min(abs(weight), 1.0))
+
+                else:
+                    st.warning("LIME could not generate an explanation.")
+
             else:
-                st.error("LIME could not generate an explanation for this comment.")
-                explanation_list = []
 
-            positive_words = [
-                (word, weight)
-                for word, weight in explanation_list
-                if weight > 0
-            ]
+                st.markdown("### 🧠 SHAP Explanation")
 
-            negative_words = [
-                (word, weight)
-                for word, weight in explanation_list
-                if weight < 0
-            ]
-
-            col1, col2 = st.columns(2)
-
-            # ------------------------------------------------
-            # Supporting Words
-            # ------------------------------------------------
-
-            with col1:
-
-                st.subheader("🟢 Words Supporting the Prediction")
-
-                if positive_words:
-
-                    for word, weight in positive_words:
-
-                        st.write(
-                            f"**{word}** → +{weight:.4f}"
-                        )
-
-                        st.progress(
-                            min(abs(weight), 1.0)
-                        )
-
-                else:
-
-                    st.info(
-                        "No strongly supporting words were identified."
+                with st.spinner("Generating SHAP explanation..."):
+                    shap_exp, predicted_class, probabilities = (
+                        explain_with_shap(text)
                     )
 
-            # ------------------------------------------------
-            # Opposing Words
-            # ------------------------------------------------
+                st.write(
+                    f"Explaining prediction: **{CLASS_NAMES[predicted_class]}**"
+                )
 
-            with col2:
+                # Extract tokens and their SHAP values
+                tokens = list(shap_exp.data)
+                values = np.asarray(shap_exp.values).flatten()
 
-                st.subheader("🔵 Words Opposing the Prediction")
+                shap_df = pd.DataFrame({
+                    "Token": tokens,
+                    "SHAP Value": values,
+                })
 
-                if negative_words:
+                shap_df = shap_df[
+                    shap_df["Token"].astype(str).str.strip() != ""
+                    ]
 
-                    for word, weight in negative_words:
+                shap_df = shap_df.sort_values(
+                    "SHAP Value",
+                    key=lambda x: x.abs(),
+                    ascending=False,
+                )
 
-                        st.write(
-                            f"**{word}** → {weight:.4f}"
-                        )
+                st.markdown("#### Token Contributions")
 
-                        st.progress(
-                            min(abs(weight), 1.0)
-                        )
+                st.caption(
+                    "Positive values push the selected class score higher; "
+                    "negative values push it lower."
+                )
 
-                else:
+                st.dataframe(
+                    shap_df.reset_index(drop=True),
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
-                    st.info(
-                        "No strongly opposing words were identified."
+                st.markdown("#### Most Important Tokens")
+
+                chart_df = shap_df.head(15).sort_values("SHAP Value")
+
+                if not chart_df.empty:
+                    st.bar_chart(
+                        chart_df.set_index("Token")["SHAP Value"]
                     )
 
-            st.info(
-                "LIME explanations show how individual words contributed "
-                "to this specific prediction. They should not be interpreted "
-                "as universal cyberbullying keywords."
-            )
+                st.info(
+                    "SHAP values describe how tokens contribute to this "
+                    "individual model prediction. They do not establish "
+                    "that a word is universally associated with cyberbullying."
+                )
 
 
 # ============================================================
@@ -211,7 +227,7 @@ else:
     st.write(
         "Upload a CSV file containing a column named **text**. "
         "The model will classify the comments and you can select "
-        "an individual comment to generate its LIME explanation."
+        "an individual comment to generate its explanation."
     )
 
     uploaded_file = st.file_uploader(
@@ -422,107 +438,78 @@ else:
             # ------------------------------------------------
 
             if st.button(
-                "🧠 Generate LIME Explanation",
-                type="primary"
+                    f"🧠 Generate {explanation_method} Explanation",
+                    type="primary",
             ):
 
-                with st.spinner(
-                    "Generating LIME explanation..."
-                ):
+                if explanation_method == "LIME":
 
-                    explanation = explain_text(
-                        selected_text
+                    with st.spinner("Generating LIME explanation..."):
+                        explanation = explain_text(selected_text)
+
+                    explanation_list = explanation.as_list(
+                        label=(
+                            1 if selected_prediction == "Cyberbullying"
+                            else 0
+                        )
                     )
 
-                predicted_class = (
-                    1
-                    if selected_prediction == "Cyberbullying"
-                    else 0
-                )
-
-                explanation_list = explanation.as_list(
-                    label=predicted_class
-                )
-
-                positive_words = [
-                    (word, weight)
-                    for word, weight in explanation_list
-                    if weight > 0
-                ]
-
-                negative_words = [
-                    (word, weight)
-                    for word, weight in explanation_list
-                    if weight < 0
-                ]
-
-                # ------------------------------------------------
-                # Explanation
-                # ------------------------------------------------
-
-                st.markdown("---")
-                st.markdown("### 🧠 LIME Explanation")
-
-                col1, col2 = st.columns(2)
-
-                # Supporting
-                with col1:
-
-                    st.subheader(
-                        "🟢 Words Supporting the Prediction"
+                    explanation_df = pd.DataFrame(
+                        explanation_list,
+                        columns=["Token", "Contribution"],
                     )
 
-                    if positive_words:
+                    st.markdown("### 🔬 LIME Explanation")
+                    st.dataframe(
+                        explanation_df,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
 
-                        for word, weight in positive_words:
+                else:
 
-                            st.write(
-                                f"**{word}** → +{weight:.4f}"
-                            )
-
-                            st.progress(
-                                min(abs(weight), 1.0)
-                            )
-
-                    else:
-
-                        st.info(
-                            "No strongly supporting words "
-                            "were identified."
+                    with st.spinner("Generating SHAP explanation..."):
+                        shap_exp, predicted_class, probabilities = (
+                            explain_with_shap(selected_text)
                         )
 
-                # Opposing
-                with col2:
+                    shap_df = pd.DataFrame({
+                        "Token": list(shap_exp.data),
+                        "SHAP Value": np.asarray(
+                            shap_exp.values
+                        ).flatten(),
+                    })
 
-                    st.subheader(
-                        "🔵 Words Opposing the Prediction"
+                    shap_df = shap_df[
+                        shap_df["Token"].astype(str).str.strip() != ""
+                        ]
+
+                    shap_df = shap_df.sort_values(
+                        "SHAP Value",
+                        key=lambda x: x.abs(),
+                        ascending=False,
                     )
 
-                    if negative_words:
+                    st.markdown("### 🧠 SHAP Explanation")
 
-                        for word, weight in negative_words:
+                    st.write(
+                        f"Explaining prediction: **{CLASS_NAMES[predicted_class]}**"
+                    )
 
-                            st.write(
-                                f"**{word}** → {weight:.4f}"
-                            )
+                    st.dataframe(
+                        shap_df.reset_index(drop=True),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
 
-                            st.progress(
-                                min(abs(weight), 1.0)
-                            )
+                    st.markdown("#### Token Importance")
 
-                    else:
-
-                        st.info(
-                            "No strongly opposing words "
-                            "were identified."
+                    if not shap_df.empty:
+                        st.bar_chart(
+                            shap_df.head(15)
+                            .sort_values("SHAP Value")
+                            .set_index("Token")["SHAP Value"]
                         )
-
-                st.info(
-                    "LIME explanations describe the local contribution "
-                    "of words for the selected comment. They should not "
-                    "be interpreted as universal cyberbullying keywords."
-                )
-
         except Exception as e:
 
             st.error(
